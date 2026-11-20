@@ -51,7 +51,7 @@ FEATURE_GENERATE_ENABLED = "false"
 LLM_KITA_BASE_URL = "https://api.llm-kita.com/api/v1"
 # `auto` lets the gateway pick the model. The earlier `kita-default` was invented during setup
 # and was never a real model id.
-LLM_KITA_MODEL = "auto"
+LLM_KITA_MODEL = "gpt-6-luna"
 LLM_TIMEOUT_MS = "60000"
 LLM_MAX_TOKENS_GENERATE = "8000"
 LLM_MAX_TOKENS_REVISE = "12000"

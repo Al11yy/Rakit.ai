@@ -128,7 +128,10 @@ export function parseEnvelope(
     logger.warn('llm.output.invalid', {
       promptHash: promptHashValue,
       finishReason,
+      // Paths and Zod codes only: enough to tell a missing `tables.0.rows` from a rejected
+      // `kind`, and nothing from the model's answer beyond where it went wrong.
       issuePaths: issues.map((i) => i.path),
+      issueCodes: issues.map((i) => i.code ?? 'unknown'),
     })
     throw new ModelOutputError(issues)
   }

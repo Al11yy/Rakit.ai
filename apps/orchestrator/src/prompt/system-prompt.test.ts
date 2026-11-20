@@ -54,6 +54,24 @@ describe('buildSystemPrompt', () => {
     }
   })
 
+  /**
+   * The example was the only place these appeared, and a model that treated a field shown
+   * once as optional produced output the contract rejected on a required key. Each limit
+   * below is one the schema enforces without a default.
+   */
+  it('states required fields the example alone used to imply', () => {
+    const prompt = buildSystemPrompt()
+
+    expect(prompt).toContain('"rows"')
+    expect(prompt).toContain('>= 0')
+    for (const type of ['INTEGER', 'TEXT', 'REAL', 'BOOLEAN']) {
+      expect(prompt).toContain(type)
+    }
+    for (const field of ['"name"', '"slug"', '"tables"', '"screens"', '"columns"']) {
+      expect(prompt).toContain(field)
+    }
+  })
+
   it('is byte-identical across calls', () => {
     expect(buildSystemPrompt()).toBe(buildSystemPrompt())
   })

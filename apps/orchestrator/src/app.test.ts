@@ -214,10 +214,14 @@ describe('POST /api/v1/generate', () => {
 
     expect(response.status).toBe(422)
     expect(response.body.error.code).toBe('INVALID_SCHEMA')
-    expect(response.body.error.details).toContainEqual({
-      path: 'screens.0.blocks.2.kind',
-      message: 'kind tidak dikenal: iframe',
-    })
+    // `toMatchObject`, not `toContainEqual`: each issue also carries a zod `code` for log
+    // grouping, and the assertion is about the path and message, not the exact key set.
+    expect(response.body.error.details).toContainEqual(
+      expect.objectContaining({
+        path: 'screens.0.blocks.2.kind',
+        message: 'kind tidak dikenal: iframe',
+      }),
+    )
   })
 
   /**

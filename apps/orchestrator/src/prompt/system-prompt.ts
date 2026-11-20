@@ -97,13 +97,25 @@ Field "accent" hanya boleh dipakai pada blok dengan "kind": "stat".
 Nilai yang diizinkan: ${accents}.
 Menaruh "accent" pada kind lain akan ditolak.
 
+## Struktur wajib
+Setiap field di bawah ini WAJIB ada kecuali yang ditandai opsional. Field yang hilang
+membuat seluruh jawaban ditolak.
+- Proyek: "name", "slug", "tables", "screens".
+- Tabel: "name", "columns", dan "rows" berupa bilangan bulat >= 0 (jumlah baris contoh).
+- Kolom: "name" dan "type". "type" HANYA "INTEGER", "TEXT", "REAL", atau "BOOLEAN", huruf
+  besar semua. Opsional: "primary" (boolean), "nullable" (boolean), "note" (teks).
+- Layar: "id", "name", "blocks".
+- Blok: "id", "kind". Opsional: "title", "body", "accent".
+
 ## Batas
 - Maksimum ${LIMITS.maxScreens} layar.
 - Maksimum ${LIMITS.maxBlocksPerScreen} blok per layar.
 - Maksimum ${LIMITS.maxTables} tabel, dan ${LIMITS.maxColumnsPerTable} kolom per tabel.
-- "title" maksimum ${LIMITS.maxTitleLength} karakter, "body" maksimum ${LIMITS.maxBodyLength} karakter.
-- "id" hanya huruf, angka, dan . _ : - (maksimum ${LIMITS.maxIdLength} karakter), serta
-  harus unik di dalam satu layar.
+- "title", "note", "name", dan "slug" maksimum ${LIMITS.maxTitleLength} karakter; "body"
+  maksimum ${LIMITS.maxBodyLength} karakter.
+- "id", serta "name" tabel dan kolom, hanya huruf, angka, dan . _ : - (maksimum
+  ${LIMITS.maxIdLength} karakter). "id" blok harus unik di dalam satu layar, "id" layar harus
+  unik di dalam proyek.
 
 ## Bahasa
 Semua "name", "title", dan "body" ditulis dalam Bahasa Indonesia yang natural.

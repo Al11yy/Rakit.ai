@@ -8,9 +8,9 @@ import { projectSchema, type ParsedProject } from './contract'
  */
 export class ContractError extends Error {
   readonly code = 'INVALID_SCHEMA' as const
-  readonly issues: { path: string; message: string }[]
+  readonly issues: IssueLike[]
 
-  constructor(issues: { path: string; message: string }[]) {
+  constructor(issues: IssueLike[]) {
     const first = issues[0]
     super(first ? `${first.path}: ${first.message}` : 'Payload tidak valid')
     this.name = 'ContractError'
@@ -26,6 +26,110 @@ const quote = (value: unknown): string => {
 }
 
 /**
+ * An issue flattened out of Zod's nested tree.
+ *
+ * `z.union` reports a failure as one `invalid_union` issue at the union's own path and keeps
+ * the real problems in `issue.errors[][]`, one array per branch. Left nested, every failed
+ * union on `llmEnvelopeSchema` surfaced as a single `(root): Invalid input` — the shape of a
+ * broken envelope but not the field: a missing `tables[].rows` and a wrong `columns[].type`
+ * read identically. A `code` is carried alongside the message because logs need to group
+ * failures without parsing Indonesian prose.
+ */
+export interface IssueLike {
+  path: string
+  message: string
+  code?: string
+}
+
+const isUnionIssue = (issue: z.core.$ZodIssue): issue is z.core.$ZodIssueInvalidUnion =>
+  issue.code === 'invalid_union'
+
+/**
+ * Pick the branch of a failed union whose errors are worth reporting.
+ *
+ * `llmEnvelopeSchema` is `union([refusal, project])`. A refusal branch fails with exactly one
+ * issue, `refusal: expected object`, on every payload that is not a refusal — reporting that
+ * for an otherwise broken project would bury the real problem under noise the model never
+ * caused. But it is not noise when the payload *is* shaped like a refusal: a refusal with an
+ * empty `reason` or a `reason` over the cap must be reported as what it is, not as a project
+ * missing `name` and `screens`.
+ *
+ * So the raw payload decides. A payload carrying a `refusal` key takes the refusal branch;
+ * anything else takes the project branch. Within a branch, nested unions resolve by the same
+ * rule applied to the payload at that branch's path.
+ */
+function pickUnionBranch(
+  issue: z.core.$ZodIssueInvalidUnion,
+  raw: unknown,
+): readonly z.core.$ZodIssue[] | undefined {
+  const branches = issue.errors
+  if (branches.length === 0) return undefined
+
+  const envelope = rawAt(raw, issue.path)
+  const atRefusal = envelope !== null && typeof envelope === 'object' && 'refusal' in envelope
+
+  const refusalIndex = branches.findIndex((branch) => isRefusalBranch(branch, issue.path))
+  const chosen = atRefusal && refusalIndex !== -1 ? refusalIndex : atRefusal ? -1 : preferredIndex(branches, refusalIndex)
+
+  return chosen === -1 ? undefined : branches[chosen]
+}
+
+/**
+ * A branch that failed on `refusal` under the union itself. Cheap and reliable because the
+ * refusal member is a flat object: its first (and only field) issue is always `refusal`.
+ */
+function isRefusalBranch(branch: readonly z.core.$ZodIssue[], unionPath: readonly PropertyKey[]): boolean {
+  return branch.some(
+    (issue) =>
+      issue.path.length === unionPath.length + 1 &&
+      issue.path[unionPath.length] === 'refusal',
+  )
+}
+
+/** The branch to report when the payload is not refusal-shaped: the first that is not one. */
+function preferredIndex(
+  branches: readonly (readonly z.core.$ZodIssue[])[],
+  refusalIndex: number,
+): number {
+  const index = branches.findIndex((_, i) => i !== refusalIndex)
+  return index === -1 ? 0 : index
+}
+
+/**
+ * Flatten Zod's issue tree into one flat, path-prefixed list.
+ *
+ * Paths are prefixed iteratively rather than recursively: a model reply can nest unions deeply
+ * enough to matter, and the loop keeps a malformed tree from becoming a stack overflow.
+ */
+function flattenIssues(issues: readonly z.core.$ZodIssue[], raw: unknown): z.core.$ZodIssue[] {
+  const out: z.core.$ZodIssue[] = []
+  const stack: { issues: readonly z.core.$ZodIssue[]; prefix: readonly PropertyKey[] }[] = [
+    { issues, prefix: [] },
+  ]
+
+  while (stack.length > 0) {
+    const { issues: current, prefix } = stack.pop()!
+    for (const issue of current) {
+      const path = [...prefix, ...issue.path]
+
+      if (isUnionIssue(issue) && issue.errors.length > 0) {
+        const branch = pickUnionBranch(issue, raw)
+        if (branch === undefined) {
+          out.push({ ...issue, path } as z.core.$ZodIssue)
+          continue
+        }
+        stack.push({ issues: branch, prefix: path })
+        continue
+      }
+
+      out.push(path === issue.path ? issue : ({ ...issue, path } as z.core.$ZodIssue))
+    }
+  }
+
+  return out
+}
+
+/**
  * Turn a Zod error into flat, user-legible issues.
  *
  * The one value worth naming explicitly is a rejected `kind`: "kind tidak dikenal" alone
@@ -33,19 +137,16 @@ const quote = (value: unknown): string => {
  * something the UI cannot render. Zod does not include the rejected value in its message,
  * so the raw payload is consulted for that path — by key, not by dumping the payload.
  */
-export function toIssues(
-  error: z.ZodError,
-  raw?: unknown,
-): { path: string; message: string }[] {
-  return error.issues.map((issue) => {
+export function toIssues(error: z.ZodError, raw?: unknown): IssueLike[] {
+  return flattenIssues(error.issues, raw).map((issue) => {
     const path = issue.path.length ? issue.path.join('.') : '(root)'
     if (issue.path[issue.path.length - 1] === 'kind' && raw !== undefined) {
       const received = rawAt(raw, issue.path)
       if (received !== undefined) {
-        return { path, message: `${issue.message}: ${quote(received)}` }
+        return { path, code: issue.code, message: `${issue.message}: ${quote(received)}` }
       }
     }
-    return { path, message: issue.message }
+    return { path, code: issue.code, message: issue.message }
   })
 }
 
