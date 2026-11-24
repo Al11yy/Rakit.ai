@@ -4,6 +4,7 @@ import {
   isRefusal,
   llmEnvelopeSchema,
   toIssues,
+  type InterviewBrief,
   type LlmEnvelope,
   type ParsedProject,
 } from '@rakit/schema'
@@ -233,7 +234,25 @@ export async function reviseProject(
       ? (currentProject as { id: string }).id
       : projectId()
 
-  const project = assembleProject(envelope, { id: existingId, prompt: instruction })
+  /**
+   * The brief rides through a revision (M-9).
+   *
+   * A brief is user-approved content: several provider calls and a human's answers produced it.
+   * `assembleProject` builds a fresh candidate from the model's envelope, which carries no brief —
+   * so without this line every revision would silently discard the user's interview, and the PRD
+   * panel would empty itself the first time they nudged a screen.
+   *
+   * Read off the incoming project rather than re-fetched or re-derived, mirroring how `existingId`
+   * is recovered above: the route already validated the body against `projectSchema`, so anything
+   * present here has been through `interviewBriefSchema` at least once.
+   */
+  const existingBrief = readBrief(currentProject)
+
+  const project = assembleProject(envelope, {
+    id: existingId,
+    prompt: instruction,
+    brief: existingBrief,
+  })
 
   /**
    * Dropped screens are logged, not repaired. Splicing the old screens back in would make a
@@ -327,6 +346,24 @@ export function renumberedBlockScreens(
   }
 
   return findings
+}
+
+/**
+ * The `brief` off a project the caller supplied, or `undefined`.
+ *
+ * A narrow reader rather than a cast, for the same reason `existingId` above is one: the route
+ * validates the body against `projectSchema` before this service sees it, but this function is
+ * also reachable from tests and could be reached from a future caller that skipped that step. A
+ * blind `as { brief?: InterviewBrief }` would turn a malformed brief into a runtime error inside
+ * `assembleProject` — a 500 reporting a client's bad payload as our bug. This returns `undefined`
+ * for anything that is not shaped like a project, so the worst case is a dropped brief rather than
+ * a crash, and `assembleProject` re-validates whatever it does receive.
+ */
+function readBrief(currentProject: unknown): InterviewBrief | undefined {
+  if (typeof currentProject !== 'object' || currentProject === null) return undefined
+  if (!('brief' in currentProject)) return undefined
+  const { brief } = currentProject as { brief?: unknown }
+  return brief === null || brief === undefined ? undefined : (brief as InterviewBrief)
 }
 
 /**

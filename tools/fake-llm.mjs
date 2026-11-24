@@ -65,6 +65,156 @@ const completion = (content) => ({
   usage: { prompt_tokens: 120, completion_tokens: 480 },
 })
 
+/**
+ * The interview's `final` payload.
+ *
+ * It must satisfy `interviewPrdSchema` in full: `summary`, at least one actor, and at least two
+ * `userFlow` steps. The Mermaid must pass `validateMermaid` — a `flowchart TD` header followed by
+ * edge lines, with no `subgraph`, `style`, `classDef` or `click`, and no `<`, `>` or `&` inside a
+ * label. A fixture that got either wrong would fail in the orchestrator's validator and the smoke
+ * run would report a contract bug that is really a fixture bug.
+ */
+const interviewBrief = () => ({
+  prd: {
+    summary:
+      'Sistem kasir untuk klinik kecil: mencatat kunjungan pasien, pembayaran, dan stok obat dengan satu pengguna per shift.',
+    actors: [
+      {
+        name: 'Resepsionis',
+        description: 'Orang yang menerima pasien dan mencatat pembayaran di depan.',
+        canDo: ['Mencatat kunjungan baru', 'Mencatat pembayaran', 'Melihat riwayat pasien'],
+      },
+      {
+        name: 'Pemilik klinik',
+        description: 'Pemilik yang memantau pemasukan tanpa ikut mencatat transaksi.',
+        canDo: ['Melihat laporan harian'],
+      },
+    ],
+    userFlow: [
+      'Resepsionis membuka aplikasi dan memilih pasien yang datang.',
+      'Resepsionis mencatat keluhan singkat dan tindakan yang diberikan.',
+      'Resepsionis mencatat pembayaran lalu menyimpan transaksi.',
+      'Pemilik klinik membuka laporan harian untuk melihat total pemasukan.',
+    ],
+    entities: [
+      {
+        name: 'pasien',
+        description: 'Data dasar pasien yang datang berulang.',
+        fields: [
+          { name: 'nama', description: 'Nama lengkap pasien' },
+          { name: 'telepon', description: 'Nomor yang bisa dihubungi' },
+        ],
+      },
+      {
+        name: 'kunjungan',
+        description: 'Satu kedatangan pasien pada satu tanggal.',
+        fields: [
+          { name: 'tanggal', description: 'Tanggal kunjungan' },
+          { name: 'jumlah_bayar', description: 'Nominal yang dibayarkan' },
+        ],
+      },
+    ],
+    businessRules: [
+      'Satu kunjungan hanya boleh punya satu pembayaran.',
+      'Pembayaran tidak boleh diubah setelah laporan harian ditutup.',
+    ],
+    screens: [
+      { name: 'Kasir', purpose: 'Mencatat kunjungan dan pembayaran' },
+      { name: 'Pasien', purpose: 'Melihat dan menambah data pasien' },
+      { name: 'Laporan harian', purpose: 'Melihat total pemasukan per hari' },
+    ],
+    outOfScope: ['Klaim asuransi', 'Laporan pajak'],
+    assumptions: [
+      'Satu pengguna memakai aplikasi per shift.',
+      'Stok obat tidak perlu berkurang otomatis dari tindakan.',
+    ],
+  },
+  mermaid: [
+    'flowchart TD',
+    'A[Buka aplikasi] --> B[Pilih pasien]',
+    'B --> C[Catat kunjungan]',
+    'C --> D[Catat pembayaran]',
+    'D --> E[Laporan harian]',
+  ].join('\n'),
+})
+
+/**
+ * The off-grammar diagram, to exercise the **route-level** contract guard.
+ *
+ * This does *not* reach the editor's `<pre>` fallback, and the distinction matters when reading
+ * the smoke output: `validateMermaid` runs inside the route, so a `subgraph` line is refused with
+ * `INVALID_SCHEMA` and no brief is ever returned. The browser's fallback is therefore reachable
+ * only through a *renderer* failure — a diagram this grammar accepts but Mermaid itself cannot
+ * draw — which is what `MermaidDiagram.test.tsx` covers with a mock.
+ *
+ * The trigger is the user's own words, so the 422 is reachable from the browser as well as from
+ * the smoke script.
+ *
+ * Note the failure is in the *syntax* rather than a payload: an angle bracket inside a label would
+ * be rejected by the same validator but for a different reason, which would blur what is proven.
+ */
+const brokenMermaidBrief = () => {
+  const brief = interviewBrief()
+  brief.mermaid = ['flowchart TD', 'subgraph Kasir', 'A[Buka] --> B[Bayar]', 'end'].join('\n')
+  return brief
+}
+
+/**
+ * One interview turn, driven entirely by the transcript the client sent.
+ *
+ * State is derived from the request rather than kept in a module variable, unlike `current` above.
+ * Two reasons: the smoke script runs several cases against one process, and a shared counter would
+ * make the second case depend on the first; and the real model's behaviour depends only on the
+ * transcript, so this is the honest shape.
+ *
+ * The round count comes from the `T1.`/`J1.` lines `buildInterviewUserMessage` emits, and the
+ * finalisation intent from the sentence it appends — both are the orchestrator's own wording, so
+ * the fake is reading the real prompt rather than a private convention.
+ */
+function interview(res, userMessage, lower) {
+  const turnCount = (userMessage.match(/^T\d+\./gm) ?? []).length
+  const wantsFinal = userMessage.includes('"mode":"final" berisi PRD lengkap')
+  const isRevision = userMessage.includes('<instruksi>')
+
+  if (lower.includes('diagram rusak')) {
+    console.log('[fake-llm] interview -> final with an off-grammar diagram')
+    return json(res, completion({ mode: 'final', ...brokenMermaidBrief() }))
+  }
+
+  if (lower.includes('tolak')) {
+    console.log('[fake-llm] interview -> refusal')
+    return json(res, completion({ refusal: { reason: 'Permintaan ini di luar cakupan produk.' } }))
+  }
+
+  if (wantsFinal || isRevision || turnCount >= 2) {
+    console.log(`[fake-llm] interview -> final (turns=${turnCount}, revision=${isRevision})`)
+    return json(res, completion({ mode: 'final', ...interviewBrief() }))
+  }
+
+  /**
+   * Two question rounds, then the finalisation above. Round one is the empty transcript; round two
+   * follows the first set of answers. `understood` is only sent on the first round, which is where
+   * the UI shows it, so a regression that dropped it on later rounds would still be visible.
+   */
+  const questions =
+    turnCount === 0
+      ? [
+          'Siapa yang memakai sistem ini setiap hari?',
+          'Apakah pembayaran dicatat per kunjungan atau per pasien?',
+        ]
+      : ['Apakah stok obat perlu berkurang otomatis setelah tindakan?']
+
+  console.log(`[fake-llm] interview -> questions (turns=${turnCount})`)
+  return json(
+    res,
+    completion({
+      mode: 'questions',
+      questions,
+      ...(turnCount === 0 ? { understood: 'Sistem kasir untuk klinik kecil.' } : {}),
+    }),
+  )
+}
+
 createServer((req, res) => {
   let raw = ''
   req.on('data', (c) => (raw += c))
@@ -76,6 +226,23 @@ createServer((req, res) => {
     const lower = instruction.toLowerCase()
 
     console.log(`[fake-llm] ${req.method} ${req.url} :: ${lower.slice(0, 60) || '(generate)'}`)
+
+    /**
+     * The interview branch.
+     *
+     * It has to come before the revision words below, because the interview's own user turn
+     * contains `<instruksi>` and an idea like "hapus layar laporan" would otherwise be swallowed
+     * by the revision handlers and answered with a project.
+     *
+     * Endpoint detection is by *system prompt*, not by URL: the OpenAI-compatible adapter posts
+     * every call to `${baseUrl}/chat/completions`, so generate, revise and interview are
+     * indistinguishable by path. `Chief of Staff` is a literal from
+     * `buildInterviewSystemPrompt` and appears in no other prompt.
+     */
+    const system = body.messages?.[0]?.role === 'system' ? body.messages[0].content : ''
+    if (system.includes('Chief of Staff')) {
+      return interview(res, userMessage, lower)
+    }
 
     if (lower.includes('lama')) {
       // Accepts the request and never answers: reaches the AbortController timeout (Q-2).

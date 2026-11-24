@@ -8,7 +8,13 @@ import {
   reviseProject,
 } from './generation'
 import { ApiErrorException, RevisionConflictError } from '../errors'
-import { clientReturning, validLlmProject, validProjectJson, clientProject } from '../testing/fixtures'
+import {
+  clientBrief,
+  clientProject,
+  clientReturning,
+  validLlmProject,
+  validProjectJson,
+} from '../testing/fixtures'
 
 const SIGNAL = new AbortController().signal
 const PROMPT = 'sistem kasir untuk klinik'
@@ -194,14 +200,23 @@ describe('generateProject', () => {
 })
 
 describe('reviseProject', () => {
-  it('echoes the current project into the provider request', async () => {
+  /**
+   * The echo is the *tree*, not the row (the revise-message narrowing): only the four fields the
+   * model can act on. Server-owned values and the interview brief stay out — the id is never
+   * something the model should repeat back, and the brief is the PRD path's input, not the
+   * revision path's.
+   */
+  it('echoes the project tree, but not server-owned fields, into the provider request', async () => {
     const client = clientReturning(validProjectJson())
 
     await reviseProject(client, clientProject(), 'tambah kolom alergi', SIGNAL)
 
     const sent = client.calls[0]?.messages[0]?.content ?? ''
-    expect(sent).toContain('p-existing-123')
     expect(sent).toContain('tambah kolom alergi')
+    expect(sent).toContain('Kasir Klinik Sehat')
+    for (const excluded of ['p-existing-123', '"status"', '"updatedAt"', '"prompt"']) {
+      expect(sent).not.toContain(excluded)
+    }
   })
 
   it('rejects a revision that drops a screen the instruction never mentioned', async () => {
@@ -384,5 +399,123 @@ describe('instructionRequestsRemoval', () => {
     ['ubah judul jadi Kasir Baru', false],
   ])('refuses to read a screen deletion: %s', (instruction, expected) => {
     expect(instructionRequestsRemoval(instruction)).toBe(expected)
+  })
+})
+
+/**
+ * M-9: a revision must not discard the interview's brief.
+ *
+ * A brief is user-approved content — several provider calls and a human's answers produced it.
+ * `assembleProject` builds a fresh candidate from the model's envelope, which carries no brief, so
+ * without explicit preservation every revision would silently empty the PRD panel the first time
+ * the user nudged a screen.
+ */
+describe('reviseProject — brief preservation (M-9)', () => {
+  const withBrief = () => clientProject({ brief: clientBrief() })
+
+  it('carries the brief from the incoming project onto the result', async () => {
+    const result = await reviseProject(
+      clientReturning(validProjectJson()),
+      withBrief(),
+      'tambah kolom alergi',
+      SIGNAL,
+    )
+
+    expect('project' in result).toBe(true)
+    if (!('project' in result)) return
+    expect(result.project.brief?.prd.summary).toContain('kasir')
+    expect(result.project.brief?.mermaid).toContain('flowchart TD')
+  })
+
+  it('preserves the brief through a JSON round-trip of the project', async () => {
+    const result = await reviseProject(
+      clientReturning(validProjectJson()),
+      JSON.parse(JSON.stringify(withBrief())),
+      'tambah kolom alergi',
+      SIGNAL,
+    )
+
+    if (!('project' in result)) return expect.unreachable('expected a project')
+    expect(result.project.brief?.prd.businessRules).toEqual(['Stok tidak boleh negatif'])
+  })
+
+  it('leaves brief undefined when the project had none', async () => {
+    const result = await reviseProject(
+      clientReturning(validProjectJson()),
+      clientProject(),
+      'tambah kolom alergi',
+      SIGNAL,
+    )
+
+    if (!('project' in result)) return expect.unreachable('expected a project')
+    expect(result.project.brief).toBeUndefined()
+  })
+
+  it('treats an explicit null brief as absent rather than crashing', async () => {
+    const result = await reviseProject(
+      clientReturning(validProjectJson()),
+      clientProject({ brief: null }),
+      'tambah kolom alergi',
+      SIGNAL,
+    )
+
+    if (!('project' in result)) return expect.unreachable('expected a project')
+    expect(result.project.brief).toBeUndefined()
+  })
+
+  /**
+   * The result is re-validated by `assembleProject`, so a malformed brief cannot be smuggled
+   * through a revision — it is refused rather than stored.
+   */
+  it('refuses a malformed brief rather than storing it', async () => {
+    const broken = clientProject({ brief: { prd: { summary: 'x' }, mermaid: 'not a diagram' } })
+
+    await expect(
+      reviseProject(clientReturning(validProjectJson()), broken, 'tambah kolom', SIGNAL),
+    ).rejects.toThrow(ContractError)
+  })
+
+  /**
+   * The brief is carried through the *result*, not sent to the provider.
+   *
+   * It used to reach `/revise` incidentally, because `buildReviseMessage` serialized the whole
+   * project and `projectSchema` keeps `brief`. The projection now narrows to the tree, so a
+   * revision sends what it edits and nothing else — the brief is `/interview`'s input, and the
+   * tree it describes is already in the message.
+   */
+  it('keeps the brief out of the revise provider message', async () => {
+    const client = clientReturning(validProjectJson())
+    await reviseProject(client, withBrief(), 'tambah kolom alergi', SIGNAL)
+
+    const sent = client.calls[0]?.messages[0]?.content ?? ''
+    expect(sent).toContain('tambah kolom alergi')
+    // The tree is still echoed — this is a narrowing, not an emptying.
+    expect(sent).toContain('Kasir Klinik Sehat')
+    expect(sent).not.toContain('Stok tidak boleh negatif')
+    expect(sent).not.toContain('sistem kasir untuk klinik')
+  })
+
+  it('keeps the project id while replacing the brief-carrying tree', async () => {
+    const result = await reviseProject(
+      clientReturning(validProjectJson()),
+      withBrief(),
+      'tambah kolom alergi',
+      SIGNAL,
+    )
+
+    if (!('project' in result)) return expect.unreachable('expected a project')
+    expect(result.project.id).toBe('p-existing-123')
+  })
+
+  it('produces a project that still passes projectSchema with the brief attached', async () => {
+    const result = await reviseProject(
+      clientReturning(validProjectJson()),
+      withBrief(),
+      'tambah kolom alergi',
+      SIGNAL,
+    )
+
+    if (!('project' in result)) return expect.unreachable('expected a project')
+    expect(projectSchema.safeParse(result.project).success).toBe(true)
   })
 })

@@ -84,6 +84,20 @@ export const notFound = (what: string) =>
   })
 
 /**
+ * A well-formed request the provider could not satisfy in the way the turn required.
+ *
+ * 422 rather than 400, matching how `INVALID_SCHEMA` and `REVISION_DROPPED_DATA` are treated: the
+ * request itself was fine, and retrying the same turn may well succeed. 400 would tell the client
+ * to change something that did nothing wrong.
+ *
+ * A distinct helper rather than `badRequest` with a hand-written status, so the status is stated
+ * once and a caller cannot accidentally make this a 400 — the code's contract is that it is
+ * retryable, and the status is what says so.
+ */
+export const unprocessableEntity = (code: string, message: string, details?: unknown) =>
+  new ApiErrorException(422, { code, message, details })
+
+/**
  * A write that lost a race: the row exists, but at a revision the caller did not expect.
  *
  * 409 rather than 400, because the request was well-formed and would have succeeded a moment

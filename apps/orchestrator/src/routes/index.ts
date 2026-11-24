@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { projectSchema } from '@rakit/schema'
+import { INTERVIEW_LIMITS, interviewTurnSchema, projectSchema } from '@rakit/schema'
 import type { LlmClient } from '../llm/client'
 import { LlmError, LlmTimeoutError } from '../llm/errors'
 import { generateProject, reviseProject } from '../services/generation'
+import { runInterviewTurn } from '../services/interview'
 import { badRequest, databaseUnavailable, featureDisabled } from '../errors'
 import { checkToken } from '../auth'
 import { isGenerateEnabled } from '../config'
@@ -55,6 +56,39 @@ const generateRequestSchema = z.object({
 const reviseRequestSchema = z.object({
   project: projectSchema,
   instruction: z.string(),
+})
+
+/**
+ * The interview body.
+ *
+ * Lengths are deliberately **not** bounded for `idea` or the answers. A `.min()`/`.max()` here
+ * would reject an over-length idea with a generic `INVALID_REQUEST` before `checkInterviewInput`
+ * ever runs, turning the specific `IDEA_TOO_SHORT` / `TRANSCRIPT_TOO_LARGE` codes — the ones a
+ * client can act on — into dead code. Same reasoning as `generateRequestSchema`; the service owns
+ * the bounds, applied to the trimmed value, so the two checks cannot disagree.
+ *
+ * `revisions` *is* bounded, for a different reason: it feeds the budget arithmetic, so an absurd
+ * number must fail as a malformed request rather than inflate `spent`. Note this is a soft field —
+ * a client that understates it gets extra calls, which `what.md` §5 accepts because the budget
+ * bounds a transcript, not a user.
+ *
+ * `brief` and `instruction` are bounded because they enlarge the request body rather than the
+ * transcript: the caps mirror `maxBriefProjectionChars` and `maxInstructionChars` so a revision
+ * cannot push the body towards the 32 kB middleware ceiling.
+ */
+const interviewRequestSchema = z.object({
+  idea: z.string(),
+  turns: z.array(interviewTurnSchema).optional().default([]),
+  finalize: z.boolean().optional().default(false),
+  revisions: z
+    .number()
+    .int()
+    .min(0)
+    .max(INTERVIEW_LIMITS.maxRevisions)
+    .optional()
+    .default(0),
+  brief: z.string().max(INTERVIEW_LIMITS.maxBriefProjectionChars).optional(),
+  instruction: z.string().max(INTERVIEW_LIMITS.maxInstructionChars).optional(),
 })
 
 /**
@@ -213,7 +247,14 @@ export function createRouter(
      * independent of where the router is mounted.
      */
     const path = c.req.path
-    const isProviderRoute = path.endsWith('/generate') || path.endsWith('/revise')
+    /**
+     * `/interview` is gated alongside the other two because it spends the same quota — several
+     * calls per session, in fact, which makes it the more expensive of the three. `conventions.md`
+     * is explicit that deferring auth does not mean publishing, and the flag is the containment
+     * that makes that true.
+     */
+    const isProviderRoute =
+      path.endsWith('/generate') || path.endsWith('/revise') || path.endsWith('/interview')
     if (isProviderRoute && !isGenerateEnabled(c.env)) {
       logger.warn('feature.disabled', { path: c.req.path })
       throw featureDisabled(path.split('/').pop() ?? 'generate')
@@ -326,6 +367,40 @@ export function createRouter(
       const outcome = await underDeadline(
         signal,
         () => reviseProject(client, body.project, body.instruction, signal),
+        timeoutMs,
+      )
+      return c.json({ data: outcome, error: null })
+    } finally {
+      dispose()
+    }
+  })
+
+  /**
+   * One interview turn.
+   *
+   * Registered below the token middleware and below the gate, with no exemption: it is the most
+   * expensive route on the surface, so an exemption would be exactly backwards.
+   *
+   * The deadline pairing is the same as `/generate` and `/revise` — `abortAfter` plus
+   * `underDeadline` — for the reason stated there: the bound has to hold for any `LlmClient`, not
+   * only for the one adapter that enforces its own timer. The client-abort listener means a user
+   * who closes the tab mid-interview stops the provider call rather than paying for an answer
+   * nobody will read.
+   *
+   * Every validation failure is raised by `checkInterviewInput` inside the service, so this
+   * handler has no branch of its own: it hands the body over and lets `toApiError` map whatever
+   * comes back. That keeps the codes in one place.
+   */
+  router.post('/interview', async (c) => {
+    const body = parseBody(interviewRequestSchema, await readJson(c), 'idea')
+
+    const { signal, abort, dispose } = abortAfter(timeoutMs)
+    c.req.raw.signal.addEventListener('abort', () => abort())
+
+    try {
+      const outcome = await underDeadline(
+        signal,
+        () => runInterviewTurn(client, body, signal),
         timeoutMs,
       )
       return c.json({ data: outcome, error: null })

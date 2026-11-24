@@ -129,4 +129,69 @@ describe('message builders', () => {
     expect(message).toContain('tambah kolom alergi')
     expect(message).toContain('Pertahankan "id" layar dan "id" blok')
   })
+
+  /**
+   * The revise echo is the tree, not the row.
+   *
+   * Server-owned values are excluded because the system prompt forbids the model from returning
+   * them — echoing them invites the model to hand them back. `prompt` and `brief` are excluded
+   * because a revision edits a tree, and re-sending the history that produced it spends input
+   * tokens on a second, competing description.
+   */
+  it('echoes only the editable tree on revise, not server-owned fields', () => {
+    const row = {
+      id: 'p-123',
+      name: 'Kasir',
+      slug: 'kasir',
+      prompt: 'sistem kasir untuk klinik',
+      status: 'draft',
+      updatedAt: 'baru saja',
+      tablesCount: 0,
+      screensCount: 1,
+      tables: [],
+      screens: [{ id: 's-1', name: 'Kasir', blocks: [] }],
+      brief: { prd: { summary: 'ringkasan-rahasia' }, mermaid: 'flowchart TD\n A --> B' },
+    }
+
+    const message = buildReviseMessage(row, 'tambah kolom alergi')
+
+    // The tree survives — this is a narrowing, not an emptying.
+    expect(message).toContain('Kasir')
+    expect(message).toContain('s-1')
+
+    for (const leaked of [
+      'p-123',
+      'sistem kasir untuk klinik',
+      '"status"',
+      '"updatedAt"',
+      '"tablesCount"',
+      '"screensCount"',
+      'ringkasan-rahasia',
+    ]) {
+      expect(message).not.toContain(leaked)
+    }
+  })
+
+  /**
+   * The property that motivated an explicit pick over a strip-list: a field added to
+   * `projectSchema` later must be excluded *by default*. `brief` arrived in this message because
+   * nothing excluded it; an allow-list is what makes the next such field a non-event.
+   */
+  it('excludes a field it has never heard of', () => {
+    const future = {
+      name: 'Kasir',
+      slug: 'kasir',
+      tables: [],
+      screens: [],
+      someFieldAddedLater: 'tidak boleh ikut terkirim',
+    }
+
+    expect(buildReviseMessage(future, 'ubah')).not.toContain('tidak boleh ikut terkirim')
+  })
+
+  it('survives a non-object project rather than throwing here', () => {
+    // Malformed input still has to produce a model error, not a TypeError in the prompt builder.
+    expect(() => buildReviseMessage(null, 'ubah')).not.toThrow()
+    expect(() => buildReviseMessage('bukan objek', 'ubah')).not.toThrow()
+  })
 })

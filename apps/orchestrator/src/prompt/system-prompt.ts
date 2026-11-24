@@ -158,12 +158,27 @@ Balas dengan satu objek JSON saja.`
  * The current project is echoed in full because the model has no memory of the previous
  * call. Without it, a revision regenerates from scratch and silently discards every free
  * visual edit the user made — precisely the failure M-7 exists to prevent.
+ *
+ * **The tree, not the row.** Only the four fields the model can act on are serialized. The stored
+ * project also carries server-owned values — `id`, `prompt`, `status`, `updatedAt`,
+ * `tablesCount`, `screensCount` — and, since the interview feature, `brief`. None of those help a
+ * revision and two of them are harmful:
+ *
+ *   - `id`/`status`/`updatedAt` are server-owned, and the system prompt already forbids the model
+ *     from returning them. Echoing them invites the model to echo them back.
+ *   - `prompt` is the original idea and `brief` is the finished interview. Both are long, both are
+ *     already represented by the tree itself, and neither changes what the revision should do. A
+ *     revision edits a tree; re-sending the history that produced the tree only spends input
+ *     tokens and gives the model a second, competing description to reconcile against.
+ *
+ * `brief` in particular stays out on purpose: `/revise` is not the PRD path, and `M-10` keeps that
+ * wiring for a later blueprint.
  */
 export function buildReviseMessage(project: unknown, instruction: string): string {
   return `Berikut struktur aplikasi yang sudah ada, dalam JSON:
 
 <proyek>
-${JSON.stringify(project, null, 2)}
+${JSON.stringify(asProjectTree(project), null, 2)}
 </proyek>
 
 Ubah HANYA sesuai instruksi berikut, dan pertahankan bagian lain apa adanya.
@@ -174,6 +189,24 @@ ${instruction}
 </instruksi>
 
 Balas dengan objek JSON lengkap setelah perubahan.`
+}
+
+/**
+ * Narrow a project to the tree the model is allowed to edit.
+ *
+ * Written as an explicit pick rather than a `delete`-based strip so a field added to
+ * `projectSchema` later is excluded *by default* — a strip-list would silently start leaking the
+ * new field the moment it is added, which is how `brief` arrived in this message in the first
+ * place. The four keys are the same four `llmProjectSchema` accepts, which is what makes the echo
+ * round-trip cleanly: what the model sees is exactly the shape it is asked to return.
+ *
+ * Returns the input unchanged when it is not object-shaped, so a malformed call still produces a
+ * model error rather than a `TypeError` here.
+ */
+function asProjectTree(project: unknown): unknown {
+  if (typeof project !== 'object' || project === null) return project
+  const { name, slug, tables, screens } = project as Record<string, unknown>
+  return { name, slug, tables, screens }
 }
 
 /** Exported for the prompt tests; the bounds themselves live in config.ts. */
