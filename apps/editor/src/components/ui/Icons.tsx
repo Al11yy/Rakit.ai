@@ -111,3 +111,10 @@ export const IconChevronDown = ({ className }: Props) => (
     <path d="M4.4 6.4 8 10l3.6-3.6" />
   </svg>
 )
+
+export const IconChat = ({ className }: Props) => (
+  <svg {...base(className)}>
+    <path d="M2.2 3.4h11.6v7.2H7.4L3.8 13.4v-2.8H2.2V3.4Z" />
+    <path d="M5 6.2h6M5 8.2h3.6" />
+  </svg>
+)

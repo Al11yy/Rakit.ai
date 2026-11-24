@@ -1,4 +1,10 @@
-import { projectSchema, type ParsedProject } from '@rakit/schema'
+import {
+  INTERVIEW_LIMITS,
+  interviewBriefSchema,
+  projectSchema,
+  type InterviewBrief,
+  type ParsedProject,
+} from '@rakit/schema'
 
 /**
  * The client for the orchestrator.
@@ -255,6 +261,185 @@ export async function reviseProject(
   }
 
   return { project: asProject(data.project), usage: data.usage }
+}
+
+/* ---------------------------------------------------------------------------------------
+ * Interview
+ * ------------------------------------------------------------------------------------- */
+
+/**
+ * What the server reports about the transcript's remaining budget.
+ *
+ * Mirrored onto state on every response, including a refusal: the provider was called in that
+ * case too, so a client that ignored the budget on a refusal would believe it had one more call
+ * than it does and offer a button that is guaranteed to fail.
+ */
+export interface InterviewBudgetReport {
+  spent: number
+  remaining: number
+  maxProviderCalls: number
+}
+
+export interface InterviewQuestionsResult {
+  mode: 'questions'
+  questions: string[]
+  understood?: string
+  usage: Usage
+  budget: InterviewBudgetReport
+}
+
+export interface InterviewFinalResult {
+  mode: 'final'
+  prd: InterviewBrief
+  mermaid: string
+  usage: Usage
+  budget: InterviewBudgetReport
+}
+
+export type InterviewResult = InterviewQuestionsResult | InterviewFinalResult
+
+export interface InterviewRequestInput {
+  idea: string
+  turns: readonly { question: string; answer: string }[]
+  finalize: boolean
+  /** Revision turns this transcript has already completed. The server adds it to `spent`. */
+  revisions?: number
+  /** A revision turn only: the projection, never the brief object. */
+  brief?: string
+  instruction?: string
+  signal?: AbortSignal
+}
+
+/**
+ * The refusal carries a budget too.
+ *
+ * `generateProject` has no budget to report, so its refusal is a plain `ApiError`. An interview
+ * refusal still spent a call, and the store must mirror that or `canSpendCall` will disagree with
+ * the server. The budget therefore rides on `details`, which `ApiError` already threads through —
+ * no second error class, and a caller that does not care about budget reads it exactly like any
+ * other refusal.
+ */
+export interface InterviewRefusalDetails {
+  budget?: InterviewBudgetReport
+}
+
+/**
+ * Re-validate the PRD before it reaches state.
+ *
+ * The server already parsed it, but the preview is built to render exactly what
+ * `interviewBriefSchema` describes — the same argument `asProject` makes. A brief that fails here
+ * is reported as `UNRENDERABLE_PAYLOAD` rather than thrown as a Zod error, so the store's failure
+ * path is one branch.
+ */
+function asBrief(candidate: unknown): InterviewBrief {
+  // Validates `{ prd, mermaid }` as a pair — the shape of `interviewBriefSchema` and of the
+  // `InterviewBrief` this returns. Passing a bare PRD here always fails, silently turning a
+  // valid final turn into UNRENDERABLE_PAYLOAD.
+  const result = interviewBriefSchema.safeParse(candidate)
+  if (!result.success) {
+    throw new ApiError(
+      'UNRENDERABLE_PAYLOAD',
+      'Server mengembalikan PRD yang tidak dapat ditampilkan.',
+      200,
+      result.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    )
+  }
+  return result.data
+}
+
+/**
+ * One interview turn.
+ *
+ * Deliberately shaped like `generateProject`: a refusal becomes an `ApiError('LLM_REFUSED')` so
+ * the store has one failure path, and the caller does not have to know which of two payload
+ * shapes came back to decide whether the call succeeded.
+ *
+ * Two things are filtered rather than trusted, because this endpoint's payload is the most
+ * model-shaped one in the API — a list of strings the model chose:
+ *
+ *   - non-string questions are dropped, because a renderer that maps over `questions` would
+ *     otherwise put `undefined` on screen;
+ *   - the list is sliced to `maxQuestionsPerRound`, so a model that ignores the cap cannot make
+ *     the UI promise more rounds than the budget can pay for.
+ *
+ * An empty surviving list is `UNRENDERABLE_PAYLOAD`, not an empty question card: a turn that
+ * returns nothing to ask has spent a call and advanced nothing, and showing a blank panel would
+ * look like a stall rather than a failure.
+ */
+export async function interviewTurn(input: InterviewRequestInput): Promise<InterviewResult> {
+  const { signal, ...body } = input
+
+  const data = await post<{
+    mode?: string
+    questions?: unknown
+    understood?: unknown
+    prd?: unknown
+    mermaid?: unknown
+    refusal?: { reason: string }
+    usage: Usage
+    budget: InterviewBudgetReport
+  }>('/api/v1/interview', body, signal)
+
+  if (data.refusal !== undefined) {
+    throw new ApiError(
+      'LLM_REFUSED',
+      data.refusal.reason || 'Model menolak permintaan ini.',
+      200,
+      { budget: data.budget } satisfies InterviewRefusalDetails,
+    )
+  }
+
+  if (data.mode === 'final') {
+    if (typeof data.mermaid !== 'string' || data.mermaid.trim() === '') {
+      throw new ApiError('UNRENDERABLE_PAYLOAD', 'Server mengembalikan diagram yang kosong.', 200)
+    }
+    return {
+      mode: 'final',
+      /**
+       * `asBrief` validates the *pair*, because `interviewBriefSchema` is `{ prd, mermaid }` and
+       * not the bare PRD. Passing `data.prd` alone failed the schema on every final turn, which
+       * surfaced as "Server mengembalikan PRD yang tidak dapat ditampilkan" for a valid answer.
+       */
+      prd: asBrief({ prd: data.prd, mermaid: data.mermaid }),
+      mermaid: data.mermaid,
+      usage: data.usage,
+      budget: data.budget,
+    }
+  }
+
+  if (data.mode === 'questions') {
+    const questions = Array.isArray(data.questions)
+      ? data.questions
+          .filter((q): q is string => typeof q === 'string' && q.trim() !== '')
+          .map((q) => q.trim())
+          .slice(0, INTERVIEW_LIMITS.maxQuestionsPerRound)
+      : []
+
+    if (questions.length === 0) {
+      throw new ApiError(
+        'UNRENDERABLE_PAYLOAD',
+        'Server tidak mengembalikan pertanyaan yang dapat ditampilkan.',
+        200,
+        { budget: data.budget } satisfies InterviewRefusalDetails,
+      )
+    }
+
+    return {
+      mode: 'questions',
+      questions,
+      understood: typeof data.understood === 'string' ? data.understood : undefined,
+      usage: data.usage,
+      budget: data.budget,
+    }
+  }
+
+  // Neither a refusal nor either mode: an answer this client was not built to read.
+  throw new ApiError(
+    'UNRENDERABLE_PAYLOAD',
+    'Server membalas dengan mode yang tidak dikenal.',
+    200,
+    { budget: data.budget } satisfies InterviewRefusalDetails,
+  )
 }
 
 /**

@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { useBuilder, type View } from '../../store/useBuilder'
-import { IconLayers, IconPlus, IconTable, IconTrash } from '../ui/Icons'
+import { IconChat, IconLayers, IconPlus, IconTable, IconTrash } from '../ui/Icons'
 
 const NAV: { id: View; label: string; icon: ReactNode }[] = [
+  { id: 'interview', label: 'Rancangan', icon: <IconChat /> },
   { id: 'builder', label: 'Editor', icon: <IconLayers /> },
   { id: 'schema', label: 'Skema', icon: <IconTable /> },
 ]

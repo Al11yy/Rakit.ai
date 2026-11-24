@@ -36,17 +36,20 @@ export default defineConfig({
   },
   test: {
     /**
-     * `node`, not `jsdom`: the editor's suites (`store/useBuilder.test.ts` and
-     * `lib/api.test.ts`) exercise the store and the HTTP client, both of whose network seams
-     * are mocked. Nothing here mounts a component, so there is no DOM to provide. A component
-     * test would have to switch this to `jsdom` — and would then be the first thing to want
-     * `@testing-library/react`, which is deliberately not installed yet.
+     * `node` stays the default even though `MermaidDiagram.test.tsx` needs a DOM. The three
+     * original suites exercise the store, the HTTP client and the diagram's own pipeline, none
+     * of which want browser globals — putting every test in jsdom would slow them all down for
+     * the sake of one. The DOM test opts in with a `// @vitest-environment jsdom` docblock.
+     *
+     * `.tsx` is in the glob because the security test is the first component-adjacent test in
+     * this workspace; without it the file would be silently skipped and `passWithNoTests` would
+     * hide that.
      *
      * `passWithNoTests` stays as a guard: the contract's own tests live in `packages/schema`,
      * so a future move could empty this suite and `npm test` should not go red for it.
      */
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     passWithNoTests: true,
   },
 })

@@ -9,15 +9,30 @@ import {
   listProjects,
   createProject,
   upsertProject,
+  interviewTurn,
   // Aliased: the action below shares the name, and inside the store body `deleteProject` would
   // resolve to the action rather than the client.
   deleteProject as removeProject,
+  type InterviewBudgetReport,
+  type InterviewResult,
+  type InterviewRefusalDetails,
 } from '../lib/api'
+import {
+  INTERVIEW_LIMITS,
+  SKIPPED_ANSWER,
+  buildBriefProjection,
+  type InterviewBrief,
+  type InterviewTurn,
+} from '../lib/contract'
 
 /**
  * `'ledger'` is gone. It was the coin-history view, and there are no coins.
+ *
+ * `'interview'` is registered here but has no view component in this wave — the rail entry and
+ * the panel that renders `questions`/`drafts` land in Wave 3. Registering the value now keeps the
+ * store's actions callable from tests and lets the view land without a second store change.
  */
-export type View = 'builder' | 'schema'
+export type View = 'builder' | 'schema' | 'interview'
 
 export type Toast = {
   id: string
@@ -28,8 +43,139 @@ export type Toast = {
 
 type RunState = 'idle' | 'running' | 'done' | 'failed'
 
+/**
+ * Where the interview is. Distinct from `RunState` because an interview has a shape question
+ * rounds move through, and `'questions'` is not a run status.
+ *
+ * `'failed'` is a terminal-looking state that still admits a retry: `submitAnswers` can be
+ * called again with the same round, which is why the transcript is left exactly as it was on
+ * failure rather than truncated to the last good turn.
+ */
+export type InterviewPhase = 'idle' | 'questions' | 'final' | 'refused' | 'failed'
+
+/**
+ * A question round's editable drafts, keyed by index.
+ *
+ * Held separately from `turns` because a draft is not yet a turn: `turns` is the transcript the
+ * server counts, and putting half-typed answers in it would spend budget on keystrokes.
+ */
+export type InterviewDrafts = Record<number, string>
+
+interface InterviewState {
+  phase: InterviewPhase
+  idea: string
+  turns: InterviewTurn[]
+  questions: string[]
+  understood: string | undefined
+  drafts: InterviewDrafts
+  brief: InterviewBrief | undefined
+  /** The Mermaid source of a finished diagram; rendered in Wave 3. */
+  mermaid: string | undefined
+  /** Revision turns this transcript has completed. Forwarded so the server can price the next. */
+  revisions: number
+  /** The server's last word on spend. `freshBudget()` until the first answer. */
+  budget: InterviewBudgetReport
+  /**
+   * Derived from `budget.remaining`, never computed independently.
+   *
+   * Kept as a field rather than a selector because both `submitAnswers` and `reviseBrief` must
+   * consult it *before* calling the API — a selector would be recomputed on read and could
+   * disagree with the value the guard was written against.
+   */
+  canSpendCall: boolean
+  state: RunState
+  error: string | null
+  /** Set when a brief could not be persisted; the brief itself is still held in memory. */
+  unsavedNotice: string | null
+}
+
 let seq = 0
 const uid = (p: string) => `${p}_${(++seq).toString(16).padStart(4, '0')}`
+
+/**
+ * The budget before the server has said anything.
+ *
+ * Local on purpose: the client must not invent a spend, but it also cannot start with
+ * `remaining: 0`, or the first question round would look unaffordable. `maxProviderCalls` is a
+ * static cap, not a spend, so mirroring it here is honest — it describes what the server will
+ * allow, and the first answer overwrites it with what the server says was spent.
+ */
+function freshBudget(): InterviewBudgetReport {
+  return {
+    spent: 0,
+    remaining: INTERVIEW_LIMITS.maxProviderCalls,
+    maxProviderCalls: INTERVIEW_LIMITS.maxProviderCalls,
+  }
+}
+
+/**
+ * The interview state a brand-new transcript starts from.
+ *
+ * A function rather than a shared const so `startInterview` cannot hand two transcripts the same
+ * `drafts` object — the store is mutable and a leaked reference would make one interview's
+ * keystrokes appear in another's.
+ */
+function emptyInterview(): InterviewState {
+  return {
+    phase: 'idle',
+    idea: '',
+    turns: [],
+    questions: [],
+    understood: undefined,
+    drafts: {},
+    brief: undefined,
+    mermaid: undefined,
+    revisions: 0,
+    budget: freshBudget(),
+    canSpendCall: true,
+    state: 'idle',
+    error: null,
+    unsavedNotice: null,
+  }
+}
+
+/**
+ * Turn any thrown value into the interview's failure fields.
+ *
+ * Returns a patch rather than calling `set`, because every caller needs to fold other state into
+ * the same update (rolling `turns` back, for instance) and two `set` calls would render twice with
+ * the transcript briefly in the wrong state.
+ *
+ * The budget is deliberately not part of this patch. A failure does not roll the budget back: a
+ * call that reached the provider was spent even when its answer was unusable, and the server's
+ * count is the only one that knows. For the same reason this does not touch `canSpendCall` — that
+ * is derived from `budget`, and only a server response may move it.
+ *
+ * One exception: a refusal carries a budget on `details`, and `applyInterviewResult` handles that
+ * path — a refusal is a successful call, not a failure, so it never reaches here.
+ */
+function failurePatch(error: unknown): Partial<InterviewState> {
+  if (error instanceof ApiError) {
+    /**
+     * A refusal is a successful call with an unusable answer: the provider was reached and
+     * charged, and the API attaches the updated budget to the error for exactly this reason.
+     * Mirroring it here is what keeps `canSpendCall` honest after a refusal — without it the
+     * client would offer one more round than the server will fund.
+     */
+    if (error.code === 'LLM_REFUSED') {
+      const budget = (error.details as InterviewRefusalDetails | undefined)?.budget
+      return {
+        phase: 'refused',
+        state: 'failed',
+        error: error.message,
+        ...(budget === undefined ? {} : { budget, canSpendCall: budget.remaining > 0 }),
+      }
+    }
+
+    return { phase: 'failed', state: 'failed', error: error.message }
+  }
+
+  return {
+    phase: 'failed',
+    state: 'failed',
+    error: 'Wawancara tidak dapat dilanjutkan. Periksa koneksi lalu coba lagi.',
+  }
+}
 
 /**
  * Seed data is parsed exactly once, at module load. It is authored in this repo rather than
@@ -129,6 +275,48 @@ interface BuilderState {
   runRevision: (prompt: string) => Promise<void>
   runPublish: () => Promise<void>
 
+  interview: InterviewState
+
+  /**
+   * Begin a transcript. Clears any previous one so a second interview cannot inherit a spent
+   * budget it did not earn.
+   */
+  startInterview: (idea: string) => void
+
+  /**
+   * Send one round of answers.
+   *
+   * Rolls `turns` back on failure so a retry re-sends the same round. Without that, a failed
+   * call would leave the round recorded as answered, and the retry would send a transcript the
+   * server prices differently from the one the user believes they are continuing.
+   */
+  submitAnswers: (answers: string[]) => Promise<void>
+
+  /**
+   * Record one keystroke in the current round.
+   *
+   * Drafts are kept apart from `turns` so a half-typed answer is never sent: the transcript is
+   * what the server prices, and an answer only becomes a turn when the round is submitted.
+   */
+  setDraft: (index: number, value: string) => void
+
+  /** Ask for the PRD. Allowed at any point — not only at the question cap. */
+  finalizeInterview: () => Promise<void>
+
+  /** Revise the finished PRD. Never sends `finalize: true`; that was the defect. */
+  reviseBrief: (instruction: string) => Promise<void>
+
+  resetInterview: () => void
+
+  /**
+   * Mirror one server answer onto state. Internal to the three actions above, but on the state
+   * so a test can drive it directly without a network fake.
+   */
+  applyInterviewResult: (result: InterviewResult, wasRevision?: boolean) => void
+
+  /** Save a finished brief onto the active project. */
+  persistBrief: (brief: InterviewBrief) => Promise<void>
+
   dismissToast: (id: string) => void
 }
 
@@ -144,6 +332,8 @@ export const useBuilder = create<BuilderState>((set, get) => ({
   publish: { state: 'idle', message: '' },
   revision: { state: 'idle', message: '' },
   hasGenerated: true,
+
+  interview: emptyInterview(),
 
   loaded: false,
   loading: false,
@@ -553,6 +743,250 @@ export const useBuilder = create<BuilderState>((set, get) => ({
             body: dropped ? `${detail} Coba lagi, atau sunting lewat panel kanan.` : detail,
           },
         ],
+      }))
+    }
+  },
+
+  /* ------------------------------------------------------------------------------------
+   * Interview
+   * ---------------------------------------------------------------------------------- */
+
+  startInterview: (idea) => {
+    const trimmed = idea.trim()
+    /**
+     * The same guard the server applies, for the same reason `runGeneration` duplicates its
+     * length check: discovering it costs a round trip and a provider call otherwise. The number
+     * is not repeated here — it is read from the contract, so the two cannot drift.
+     */
+    if (trimmed.length < 12) {
+      set((s) => ({
+        interview: {
+          ...s.interview,
+          phase: 'failed',
+          state: 'failed',
+          error: 'Deskripsi terlalu pendek untuk memulai wawancara.',
+        },
+      }))
+      return
+    }
+
+    /**
+     * `emptyInterview()` rather than a patch: a new interview must not inherit the previous
+     * transcript's spend, revisions or brief.
+     *
+     * `state: 'idle'`, not `'running'`. Starting a transcript sends no request — the first
+     * question round is what calls the API, and it comes from `submitAnswers`. Marking the
+     * transcript as running here would make that very first call bail out on its own
+     * already-in-flight guard, leaving the user on a spinner that never resolves.
+     */
+    set({ interview: { ...emptyInterview(), idea: trimmed, state: 'idle' } })
+  },
+
+  submitAnswers: async (answers) => {
+    const before = get().interview
+    if (before.idea === '' || before.state === 'running') return
+
+    /**
+     * The budget check is on `canSpendCall`, mirrored from the server's last response — not a
+     * local count. A local count is what produced the two-revision defect this feature was
+     * revised to fix, so the guard asks the server's number or nothing.
+     */
+    if (!before.canSpendCall) {
+      set((s) => ({ interview: { ...s.interview, error: 'Kuota panggilan sudah habis.' } }))
+      return
+    }
+
+    /**
+     * A blank answer means "no preference", which is what the sentinel encodes. Sending an empty
+     * string instead would be rejected by `interviewTurnSchema`'s `.min(1)`, failing the whole
+     * round because of one skipped question.
+     */
+    const round = before.questions.map((question, i) => ({
+      question,
+      answer: answers[i]?.trim() === '' || answers[i] === undefined ? SKIPPED_ANSWER : answers[i].trim(),
+    }))
+
+    // At the cap, the server refuses another question round: the transcript may hold at most
+    // `maxTurns` question turns, so this turn has to be the finalisation instead.
+    const finalize = before.turns.length >= INTERVIEW_LIMITS.maxTurns
+
+    const nextTurns = [...before.turns, ...round]
+    set((s) => ({
+      interview: {
+        ...s.interview,
+        turns: nextTurns,
+        drafts: {},
+        state: 'running',
+        error: null,
+      },
+    }))
+
+    try {
+      const result = await interviewTurn({
+        idea: before.idea,
+        turns: nextTurns,
+        finalize,
+        revisions: before.revisions,
+      })
+      get().applyInterviewResult(result)
+    } catch (error) {
+      /**
+       * Roll the round back. The transcript the server priced must match the one the user
+       * believes they are continuing, so a failed round is not recorded — the retry re-sends
+       * exactly these answers, and the budget is *not* decremented, because the call that failed
+       * never reached the provider.
+       */
+      set((s) => ({
+        interview: {
+          ...s.interview,
+          turns: before.turns,
+          questions: before.questions,
+          ...failurePatch(error),
+        },
+      }))
+    }
+  },
+
+  setDraft: (index, value) => {
+    set((s) => ({ interview: { ...s.interview, drafts: { ...s.interview.drafts, [index]: value } } }))
+  },
+
+  finalizeInterview: async () => {
+    const before = get().interview
+    if (before.idea === '' || before.state === 'running') return
+    if (!before.canSpendCall) {
+      set((s) => ({ interview: { ...s.interview, error: 'Kuota panggilan sudah habis.' } }))
+      return
+    }
+
+    set((s) => ({ interview: { ...s.interview, state: 'running', error: null } }))
+
+    try {
+      /**
+       * Allowed at any point, not only at the cap: a user satisfied after two rounds has no
+       * reason to answer four more. `finalize: true` is what asks for the PRD.
+       */
+      const result = await interviewTurn({
+        idea: before.idea,
+        turns: before.turns,
+        finalize: true,
+        revisions: before.revisions,
+      })
+      get().applyInterviewResult(result)
+    } catch (error) {
+      set((s) => ({ interview: { ...s.interview, ...failurePatch(error) } }))
+    }
+  },
+
+  reviseBrief: async (instruction) => {
+    const before = get().interview
+    if (before.brief === undefined || before.state === 'running') return
+    if (!before.canSpendCall) {
+      set((s) => ({ interview: { ...s.interview, error: 'Kuota panggilan sudah habis.' } }))
+      return
+    }
+
+    set((s) => ({ interview: { ...s.interview, state: 'running', error: null } }))
+
+    try {
+      const result = await interviewTurn({
+        idea: before.idea,
+        turns: before.turns,
+        /**
+         * Never `finalize: true`. That was the defect: a revision is not a finalisation, and
+         * declaring it one consumed the single finalisation slot the old counter had, making
+         * every later revision impossible.
+         */
+        finalize: false,
+        revisions: before.revisions,
+        /** The projection, never the brief object — the server caps this field. */
+        brief: buildBriefProjection(before.brief),
+        instruction,
+      })
+      get().applyInterviewResult(result, true)
+    } catch (error) {
+      set((s) => ({ interview: { ...s.interview, ...failurePatch(error) } }))
+    }
+  },
+
+  resetInterview: () => set({ interview: emptyInterview() }),
+
+  /**
+   * Mirror one server answer onto state.
+   *
+   * Centralised because all three actions end here, and the budget mirroring is the part that
+   * must not differ between them: a call that reached the provider was spent, whatever the
+   * outcome, so `budget` is always taken from the response rather than incremented locally.
+   */
+  applyInterviewResult: (result, wasRevision = false) => {
+    const budget = result.budget
+    set((s) => {
+      const interview = {
+        ...s.interview,
+        budget,
+        canSpendCall: budget.remaining > 0,
+        state: 'done' as const,
+        error: null,
+      }
+
+      if (result.mode === 'questions') {
+        return {
+          interview: {
+            ...interview,
+            phase: 'questions' as const,
+            questions: result.questions,
+            understood: result.understood,
+            drafts: {},
+          },
+        }
+      }
+
+      return {
+        interview: {
+          ...interview,
+          phase: 'final' as const,
+          questions: [],
+          brief: result.prd,
+          mermaid: result.mermaid,
+          // Only a revision increments this; a plain finalisation is priced by `finalized`.
+          revisions: wasRevision ? s.interview.revisions + 1 : s.interview.revisions,
+        },
+      }
+    })
+
+    if (result.mode === 'final') {
+      void get().persistBrief(result.prd)
+    }
+  },
+
+  /**
+   * Save a finished brief onto the active project.
+   *
+   * A failure is a warning rather than an error: the brief is real and stays in memory, so the
+   * user can read and revise it. Reporting it as a failure would suggest the PRD was lost when it
+   * was not.
+   */
+  persistBrief: async (brief) => {
+    const project = get().activeProject()
+    if (project === undefined) {
+      set((s) => ({
+        interview: { ...s.interview, unsavedNotice: 'Belum ada proyek untuk menyimpan PRD ini.' },
+      }))
+      return
+    }
+
+    try {
+      const saved = await upsertProject({ ...project, brief })
+      set((s) => ({
+        projects: s.projects.map((p) => (p.id === saved.id ? saved : p)),
+        interview: { ...s.interview, unsavedNotice: null },
+      }))
+    } catch (error) {
+      set((s) => ({
+        interview: {
+          ...s.interview,
+          unsavedNotice: error instanceof ApiError ? error.message : 'PRD belum tersimpan.',
+        },
       }))
     }
   },

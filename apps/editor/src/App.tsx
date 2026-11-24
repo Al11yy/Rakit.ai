@@ -7,6 +7,7 @@ import { Rail } from './components/shell/Rail'
 import { TopBar } from './components/shell/TopBar'
 import { Toasts } from './components/ui/Toasts'
 import { EmptyState } from './components/views/EmptyState'
+import { InterviewView } from './components/views/InterviewView'
 import { SchemaView } from './components/views/SchemaView'
 import { useBuilder } from './store/useBuilder'
 
@@ -39,7 +40,15 @@ export default function App() {
    * covers the load-error case too: if the server never answers, `project` is still the seed,
    * so this only triggers once a response has genuinely said "zero projects".
    */
-  if (loaded && project === undefined) {
+  /**
+   * The empty-project guard does **not** apply to the interview view.
+   *
+   * An interview is the *first* thing a new user does — it produces the PRD that a project is
+   * then built from. Requiring a project first would make the rail's "Rancangan" entry a dead
+   * end on a fresh account, which is exactly when it should work. `persistBrief` handles the
+   * no-project case by holding the brief in memory and saying so.
+   */
+  if (loaded && project === undefined && view !== 'interview') {
     return (
       <div className="flex h-full overflow-hidden bg-ground">
         <Rail />
@@ -58,6 +67,7 @@ export default function App() {
         {view === 'builder' && <PromptRow />}
         {view === 'builder' && <Preview />}
         {view === 'schema' && <SchemaView />}
+        {view === 'interview' && <InterviewView />}
       </div>
       <Inspector />
       <Toasts />
