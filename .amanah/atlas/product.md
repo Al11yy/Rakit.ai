@@ -2,7 +2,8 @@
 
 > **Source of truth**: `prd_ai_first_app_builder.md` (Draft v1.0) for the intended product,
 > `PRODUCT.md` for the design brief, and `apps/` + `packages/` for what actually runs.
-> **Regenerated from code on 2026-11-18; re-verified against the code on 2026-11-20.**
+> **Regenerated from code on 2026-11-18; re-verified 2026-11-20; priority re-aligned 2026-11-24**
+> (model `gpt-6-luna`, auth deferred, Chief-of-Staff roadmap, 288 tests).
 > Where this file and the code disagree, the code wins — then fix this file.
 
 ## What Is This?
@@ -24,17 +25,31 @@ built UI is **Rakit.ai**; the PRD still calls it `[Nama Platform/Codename]`.
 | Orchestrator | **Built** — Hono on Cloudflare Workers, plus a Node dev entry |
 | Shared contract | **Built** — `packages/schema/`, Zod, one whitelist |
 | JSON-to-component mapper | **Built** — `Preview.tsx`, driven by `WHITELISTED_KINDS` |
-| Component library | **Partial** — renderers live inline in `Preview.tsx`, not a separate library |
-| LLM-Kita integration | **Built** — OpenAI-compatible client with explicit timeout |
+| Component library | **Thin** — three kinds only (`navbar`, `stat`, `table`), renderers inline in `Preview.tsx`; `TableBlock` rows are a hardcoded `ROWS` constant |
+| LLM-Kita integration | **Built & verified E2E** — OpenAI-compatible client, model `gpt-6-luna`, explicit timeout |
 | Platform persistence | **Built** — D1 `rakit-db`: projects + revision history |
 | Access control | **Built** — CORS allowlist, shared-token gate, generate flag (off in production) |
-| Auth | **Does not exist** — `owner_id` is a placeholder |
+| AI Chief of Staff (requirement interview) | **Does not exist** — priority #1 of the 2026-11-24 roadmap |
+| PRD + Mermaid user-flow output | **Does not exist** — no Mermaid dependency in the repo |
+| Auth | **Does not exist — deliberately deferred**; `owner_id` is a placeholder. Required before real users, not before the product flow |
 | DDL generation (`packages/generator/`) | **Does not exist** |
 | Per-project D1 / Workers provisioning | **Does not exist** — publish is simulated |
 | Billing (coins, Midtrans) | **Deferred** — vision only; no code, no tables |
 
-Generation and revision are real. Publish is not. Auth is the absence that keeps the product
-from being safely exposable.
+Generation and revision are real and verified against the live provider (`gpt-6-luna`), with
+288 tests passing across 17 files. Publish is not real, and the generated output is
+deliberately thin until the component library grows.
+
+**Priority order (2026-11-24 mentor decision)** — auth moved *behind* the product flow:
+
+```
+Login (deferred) → Editor → AI Chief of Staff → PRD + Mermaid → rich generation → real deploy
+```
+
+The reasoning: the shared-token gate and `FEATURE_GENERATE_ENABLED` already contain the risk
+while the Worker stays unpublicised, while the visible quality gap (three block kinds, fake
+table rows) is what makes the product feel like a demo. Auth is still mandatory before the
+platform is exposed to real users.
 
 ## Core Concepts
 
@@ -46,7 +61,13 @@ from being safely exposable.
   **not** a `components/impeccable/` library.
 - **JSON-to-Component Mapper**: `ScreenView` in `Preview.tsx`, branching on `block.kind`.
   The accepted set is exactly `navbar`, `stat`, `table`, defined once in
-  `packages/schema/src/contract.ts`.
+  `packages/schema/src/contract.ts`. Three kinds is the current ceiling on how rich a
+  generated app can look — widening it is roadmap step 5.
+- **AI Chief of Staff**: The planned structured-interview step — rounds of at most 3–5 sharp
+  questions that turn a one-sentence idea into elicited requirements. **Does not exist.**
+  Its behaviour spec is `docs/PROJECT_HANDOFF_CONTEXT.md` §5.
+- **PRD + Mermaid output**: The planned artifact of the interview: a full PRD plus a Mermaid
+  user-flow diagram. **Does not exist**; Mermaid is not a dependency yet.
 - **Visual Fallback Editor**: Click-to-edit UI for text, accent colour, and copy.
   `components/inspector/Inspector.tsx`. It edits the local block tree and never consults a
   cost — it must stay free and free-feeling.
@@ -115,6 +136,11 @@ open until the orchestrator can measure actual provider cost.
    leave `/generate` and `/revise` returning 503 `FEATURE_DISABLED`; the flag is off by default,
    including when unset. `TODO.md` keeps the deployed Worker at `"false"` on purpose — flipping
    it before auth exists hands anyone who finds the URL a working API key.
-10. **Auth is P0, and absent — not merely unstarted.** `TODO.md` ranks it as the one item that
-   unblocks provisioning and publish. `owner_id` is still `PLACEHOLDER_OWNER = 'local-user'`
-   in `repositories/projects.ts`, so every caller currently sees the same rows.
+10. **Auth is absent and deferred — not cancelled.** The 2026-11-24 meeting moved it behind
+   the product chain (Editor → Chief of Staff → PRD + Mermaid → rich generation → deploy).
+   `owner_id` is still `PLACEHOLDER_OWNER = 'local-user'` in `repositories/projects.ts`, so
+   every caller sees the same rows: do not publicise the Worker, and finish auth before real
+   users arrive.
+11. **The model is `gpt-6-luna`** (`LLM_KITA_MODEL`, `apps/orchestrator/wrangler.toml`).
+   Generate and revise were verified end-to-end against it. `auto` is the old placeholder;
+   `kita-default` never existed. Do not invent model ids.

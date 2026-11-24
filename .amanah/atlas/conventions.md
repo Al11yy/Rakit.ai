@@ -1,9 +1,10 @@
 # AI-First App Builder for Indonesia — Conventions & Gotchas
 
-> **Regenerated from code on 2026-11-18.** Replaces a version whose gotchas were about a coin
-> ledger, a `BALANCE_AFTER_REFUND` invariant, and Midtrans. None of those exist. Billing is
-> deferred; its rules are quarantined in their own section at the bottom and must not be
-> applied while building the MVP.
+> **Regenerated from code on 2026-11-18; refreshed 2026-11-24.** Replaces a version whose
+> gotchas were about a coin ledger, a `BALANCE_AFTER_REFUND` invariant, and Midtrans. None of
+> those exist. Billing is deferred; its rules are quarantined in their own section at the
+> bottom and must not be applied while building the MVP. Auth is deferred **in priority** by
+> the 2026-11-24 mentor decision — deferred, not dropped: it still ships before real users.
 
 ## Import Order (observed)
 
@@ -33,6 +34,9 @@ relative → types.
 | Replacing `CORS_ALLOWED_ORIGINS` with `*` | Lets any page drive the Worker and bill the LLM quota | Keep the allowlist; CORS is a browser rule, not access control |
 | Writing slash-containing `gitignore` patterns without `**/` | Anchors to the `.gitignore` directory and misses `apps/editor/.shots/` | Test with `git status` after staging |
 | Starting a second dev server | `strictPort: true` on 5180 and 5181 means hard failure, not a fallback port | Check for a running instance first |
+| Swapping `LLM_KITA_MODEL` casually | The system prompt is tuned against `gpt-6-luna`; a different model shifts output shape and E2E verification no longer covers it | Re-run the local generate + revise end-to-end check after any model change |
+| Treating a `{ refusal: ... }` reply as malformed | `llmEnvelopeSchema` is a union; the refusal branch is the model behaving correctly | Report it as a refusal, not an `INVALID_SCHEMA` failure |
+| Reading `(root): Invalid input` as "the whole payload is wrong" | Zod 4 nests union failures; `toIssues()` flattens them so the real field path (`tables.0.rows`) surfaces | Trust the flattened `path`; if it ever says `(root)` for an envelope, the union flattening regressed |
 
 ### Binding (for code not yet written)
 
@@ -44,7 +48,9 @@ relative → types.
 | Sharing one D1 database across projects | Cross-tenant data leak | One D1 DB per project id; `rakit-db` holds metadata only |
 | Caching the whole LLM response as the schema | Schema and UI drift apart | Store schema separately from the UI tree |
 | Deploying without retries | Partial deploy leaves an orphan D1 | Record each resource; make publish resumable |
-| Exposing the API before auth exists | `owner_id` is a placeholder, so every caller sees the same rows | Do not publicise the Worker until auth ships |
+| Exposing the API before auth exists | `owner_id` is a placeholder, so every caller sees the same rows | Do not publicise the Worker until auth ships — deferring auth does **not** mean publishing |
+| Letting a Chief-of-Staff session bypass the generate gate | The interview spends the same LLM quota as `/generate`, several calls per session | Gate it behind `FEATURE_GENERATE_ENABLED` and give each call an explicit timeout |
+| Trusting an LLM-authored Mermaid diagram as safe markup | Diagram source is model output and lands in a renderer | Validate/escape before rendering; never `dangerouslySetInnerHTML` the diagram |
 
 ## Naming Conventions
 
@@ -130,6 +136,9 @@ failure from success.
   the arrival of real auth.
 - Keep `FEATURE_GENERATE_ENABLED` off until auth exists. It is the only guard a client cannot
   read or forge. Only the exact string `"true"` opens it; the deployed Worker ships `"false"`.
+  Auth being deprioritised (2026-11-24) makes this flag **more** load-bearing, not less — it is
+  the whole reason the deferral is survivable, and it must extend to any new LLM-spending
+  endpoint such as the Chief-of-Staff interview.
 - Let `CORS_ALLOWED_ORIGINS` **fail closed**. An unset or empty value allows nothing, by
   design — a forgotten variable must not silently open the API. Matching is exact, or a
   `*.sub.example.com` wildcard; never `startsWith`/`includes`, which would admit

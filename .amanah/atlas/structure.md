@@ -1,8 +1,9 @@
 # AI-First App Builder for Indonesia — Project Structure & Patterns
 
-> **Regenerated from code on 2026-11-18.** Replaces a version that described a single-app
-> repo with a coin ledger. The monorepo now has three workspaces, an orchestrator on
-> Workers, and D1 persistence. Billing is deferred.
+> **Regenerated from code on 2026-11-18; refreshed 2026-11-24.** Replaces a version that
+> described a single-app repo with a coin ledger. The monorepo has three workspaces, an
+> orchestrator on Workers, and D1 persistence. Billing is deferred; auth is deferred in
+> priority. The active model is `gpt-6-luna` and 288 tests pass across 17 files.
 
 ## Directory Layout (actual)
 
@@ -61,6 +62,8 @@ D:\PKL\Project
 ├── scripts/
 │   ├── sync-confluence.mjs          Docs → Confluence (dry run by default)
 │   └── README-confluence.md
+├── docs/
+│   └── PROJECT_HANDOFF_CONTEXT.md   Cross-AI master context (Indonesian) — keep in sync
 ├── CLAUDE.md, PRODUCT.md, KNOWLEDGE_BASE.md, TODO.md
 └── prd_ai_first_app_builder.md      Requirements source of truth (incl. deferred billing)
 ```
@@ -73,6 +76,8 @@ Do not cite these as existing.
 packages/generator/              DDL generation from a project schema
 templates/worker/                Per-project Worker template
 apps/editor/src/components/impeccable/   Whitelisted component library, extracted
+apps/orchestrator/src/services/  Chief-of-Staff interview service (roadmap step 3)
+apps/editor/src/components/views/ PRD + Mermaid view (roadmap step 4)
 ```
 
 `apps/api/` is **not** planned. The backend is Hono in `apps/orchestrator/`.
@@ -116,6 +121,13 @@ export const WHITELISTED_KINDS = ['navbar', 'stat', 'table'] as const
 Three kinds, and all three render. There is no dead type surface: `form`, `card` and `chart`
 were removed from the whitelist rather than left declared-but-unrendered.
 
+Three is also the ceiling on how rich a generated app can look, and that is the product gap
+the roadmap attacks first among the generation steps. Note that `TableBlock` renders the
+module-level `ROWS` constant (`Preview.tsx:226`) — four hardcoded clinic rows — rather than any
+data from the project document, so every generated table shows the same content. Widening the
+whitelist and streaming real rows are steps 5a and 5b in `TODO.md`; the recipe for adding a
+kind is in `quickstart.md`.
+
 ### `kind` is a `refine`, not `z.enum`
 
 ```ts
@@ -138,7 +150,8 @@ visual edits are a free recovery path, and nothing in that code path may consult
 ### Thin-simulation seam
 
 `runPublish` still fakes its work with `setTimeout`. `runGeneration` and `runRevision` call
-`lib/api.ts` for real. `topUp` no longer exists.
+`lib/api.ts` for real, against `gpt-6-luna`, verified end-to-end locally. `topUp` no longer
+exists.
 
 ## Critical Rules
 
@@ -177,5 +190,7 @@ visual edits are a free recovery path, and nothing in that code path may consult
 | Change the LLM call | `apps/orchestrator/src/llm/`, `services/generation.ts` |
 | Change env / deploy config | `apps/orchestrator/config.ts`, `wrangler.toml` |
 | Change the demo data | `apps/editor/src/lib/seed.ts` |
+| Change the active LLM model | `apps/orchestrator/wrangler.toml` (`LLM_KITA_MODEL`) |
 | Understand the system as built | `KNOWLEDGE_BASE.md` |
 | See what is next | `TODO.md` |
+| Hand context to another AI or Confluence | `docs/PROJECT_HANDOFF_CONTEXT.md` |

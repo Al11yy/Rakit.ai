@@ -1,9 +1,9 @@
 # AI-First App Builder for Indonesia — Quick Start Recipes
 
-> **Regenerated from code on 2026-11-18.** Recipes marked **✔ works today** are verified
-> against the current code. Recipes for billing and Midtrans have been removed — that phase
-> is deferred, and the design notes live in `prd_ai_first_app_builder.md` and the last
-> section of `conventions.md`.
+> **Regenerated from code on 2026-11-18; refreshed 2026-11-24** (model `gpt-6-luna`, 288 tests,
+> auth deferred). Recipes marked **✔ works today** are verified against the current code.
+> Recipes for billing and Midtrans have been removed — that phase is deferred, and the design
+> notes live in `prd_ai_first_app_builder.md` and the last section of `conventions.md`.
 
 ## Running What Exists
 
@@ -28,9 +28,12 @@ no router — the URL never changes.
 ### Verify before claiming anything works ✔
 
 ```bash
-npm test               # vitest across all workspaces
+npm test               # vitest across all workspaces — expect 288 passing in 17 files
 npm run typecheck      # tsc --noEmit across all workspaces
 ```
+
+Expected split today: **231** orchestrator + **34** schema + **23** editor. A different total
+means a test was added or removed — check that it was intentional rather than assuming drift.
 
 From `apps/editor/`:
 
@@ -152,6 +155,10 @@ currently advances a `setTimeout` chain and mutates project state. Nothing else 
 knows it is fake, so no other file needs to change. It needs `packages/generator/` to exist
 first — there is no DDL generation yet.
 
+This is roadmap step 6, and the last of the product chain: the Chief-of-Staff interview, the
+PRD + Mermaid output, and rich generation all come first, because a real deploy of a thin
+three-block preview does not demonstrate the product.
+
 ### Generate D1 schema for a user project (not built)
 
 1. Take the schema object from the project document, **not** from raw prompt text.
@@ -190,7 +197,7 @@ explanations. Summary of what matters:
 ```
 LLM_KITA_API_KEY=            # absent → dev:all starts tools/fake-llm.mjs instead
 LLM_KITA_BASE_URL=https://api.llm-kita.com/api/v1
-LLM_KITA_MODEL=auto
+LLM_KITA_MODEL=gpt-6-luna    # active model; generate + revise verified E2E against it
 RAKIT_SHARED_TOKEN=          # containment, NOT auth. dev:all forwards it to both halves.
 FEATURE_GENERATE_ENABLED=false   # only the exact string "true" enables /generate and /revise
 CORS_ALLOWED_ORIGINS=        # browser rule, not access control
@@ -242,13 +249,28 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
 /build <feature-name>      implement, marking tasks done in now.md
 ```
 
-### Recommended next blueprints, in order
+### Recommended next blueprints, in order (2026-11-24 mentor decision)
 
-1. **`auth`** — the one absence that blocks everything else. Until it exists, `owner_id` is a
-   placeholder and the API must not be publicised.
-2. **`project-provisioning`** — `packages/generator/` (DDL from a schema) plus real D1/Workers
+Auth moved **behind** the product chain. The order is now:
+
+```
+Login (deferred) → Editor → AI Chief of Staff → PRD + Mermaid → rich generation → real deploy
+```
+
+1. **`chief-of-staff`** — the structured requirement interview: rounds of at most 3–5 sharp
+   questions, answers accumulated into a requirements object. Behaviour spec in
+   `docs/PROJECT_HANDOFF_CONTEXT.md` §5. New `services/` module and routes; gate it behind
+   `FEATURE_GENERATE_ENABLED` like `/generate`.
+2. **`prd-mermaid`** — emit a full PRD plus a Mermaid user-flow diagram and render it. New
+   `mermaid` dependency and a new editor view; nothing Mermaid-related exists today.
+3. **`rich-generation`** — widen `WHITELISTED_KINDS` (form, card, list, chart) and stop
+   rendering the hardcoded `ROWS` constant in `TableBlock`. Follow the "add a new block kind"
+   recipe above; each kind needs a renderer, a seed instance, and a system-prompt mention.
+4. **`project-provisioning`** — `packages/generator/` (DDL from a schema) plus real D1/Workers
    creation, replacing the simulated `runPublish`.
-3. **`billing`** — deferred. Pick it up only after the above, and start from the design notes
+5. **`auth`** — deferred, not dropped. Required before the platform is publicised or given
+   real users; it also unblocks per-user rate limiting.
+6. **`billing`** — deferred. Pick it up only after the above, starting from the design notes
    in the PRD and the last section of `conventions.md`.
 
 The `mvp-foundation` and `llm-orchestration` blueprints are already implemented; read them as

@@ -21,7 +21,14 @@ Locked in project instructions (`CLAUDE.md`), not re-asked during init:
 
 Code exists for the editor, the orchestrator, and the shared contract. Projects are created,
 read, updated and deleted through `/api/v1/projects`, and the editor loads and saves against
-it. Auth and per-project provisioning are the two absences that matter.
+it. Generate and revise are verified end-to-end against the real provider (`gpt-6-luna`);
+288 tests pass across 17 files. Per-project provisioning is simulated, and the generated
+output is still visually thin — see "Capabilities and Constraints".
+
+**Auth is deferred.** A 2026-11-24 mentor decision moved it behind the product flow
+(Editor → AI Chief of Staff → PRD + Mermaid → rich generation → real deploy). The shared token
+and the generate flag contain risk while the deployment stays unpublicised; auth returns
+before real users arrive.
 
 ## Users
 
@@ -51,15 +58,28 @@ Point 3 is the mechanism a competitor could not truthfully copy without rebuildi
 
 ## Operating Context
 
-The core workflow, in order:
+The core workflow as built today:
 
 1. **Initiation** — user types a raw app idea as a prompt.
-2. **PRD & schema generation** — the orchestrator sends the prompt to LLM-Kita, which returns a simple PRD structure and a JSON database schema.
+2. **PRD & schema generation** — the orchestrator sends the prompt to LLM-Kita (`gpt-6-luna`), which returns a simple PRD structure and a JSON database schema.
 3. **UI rendering** — the React frontend reads the JSON and maps it to static components from the approved library.
 4. **Iterative refinement** — the user edits the generated result in a visual fallback editor (text, images, base colors).
 5. **Instant deployment** — "Publish" provisions and deploys to Cloudflare Pages plus D1/Workers. Currently simulated.
 
-Users arrive with an app idea, not a design brief. They will not provide wireframes, brand palettes, or component specifications. The platform supplies that structure.
+The workflow the product is moving toward — the priority order agreed on 2026-11-24 — inserts
+a requirements interview before generation:
+
+1. **AI Chief of Staff** — a structured Q&A session elicits what the user actually needs, in
+   rounds of at most 3–5 sharp questions. This is the step that replaces "one sentence in".
+2. **PRD + Mermaid user-flow diagram** — the interview's visible output, and the generator's
+   explicit input.
+3. **Rich end-to-end generation** — a wider component library and real table data instead of
+   today's three block kinds and a hardcoded row constant.
+4. **Real deployment** — Cloudflare Pages/D1 integration replacing the simulated publish.
+
+Users arrive with an app idea, not a design brief. They will not provide wireframes, brand
+palettes, or component specifications. The platform supplies that structure — and with the
+Chief of Staff, it now asks rather than guesses.
 
 ## Capabilities and Constraints
 
@@ -72,7 +92,10 @@ Users arrive with an app idea, not a design brief. They will not provide wirefra
 
 **Planned, not built:**
 
-- Auth — `owner_id` is a placeholder, so the API is not safe to expose publicly
+- **AI Chief of Staff** — no structured requirement interview exists; users still get one prompt box.
+- **PRD + Mermaid user-flow output** — no artifact sits between the prompt and the screens, and no Mermaid dependency exists.
+- **Rich generation** — only `navbar`, `stat`, `table` render, and `TableBlock` draws a hardcoded row constant, so generated apps look alike regardless of the idea.
+- Auth — `owner_id` is a placeholder, so the API is not safe to expose publicly. **Deferred in priority** by the 2026-11-24 meeting, but required before real users.
 - DDL generation (`packages/generator/` does not exist) and per-project D1/Workers provisioning
 - Billing — prepaid coins funded through Midtrans, deducted per LLM call. **Deferred to a later phase;** see the PRD for the intended model.
 

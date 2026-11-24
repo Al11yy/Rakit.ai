@@ -4,11 +4,18 @@ Ringkasan arsitektur yang **benar-benar terpasang** saat ini: pipeline PRD-to-UI
 Zod bersama, orchestrator di Cloudflare Workers, dan persistensi D1. Ditulis dari kode di
 `apps/` dan `packages/`, bukan dari rencana.
 
-> **Status (2026-11-18):** monorepo berjalan, pra-MVP. Editor punya 2 view, orchestrator
+> **Status (2026-11-24):** monorepo berjalan, pra-MVP. Editor punya 2 view, orchestrator
 > menyajikan CRUD proyek lewat `/api/v1/projects` dengan persistensi D1, dan output LLM
-> divalidasi Zod terhadap whitelist komponen. **Belum ada:** autentikasi, generator DDL,
-> dan provisioning per proyek. **Billing (koin/Midtrans) ditunda** ke fase berikutnya —
-> lihat `prd_ai_first_app_builder.md` untuk model yang dituju.
+> divalidasi Zod terhadap whitelist komponen.
+>
+> - **Model LLM aktif: `gpt-6-luna`** (`LLM_KITA_MODEL`) — menggantikan `auto`, dan alur
+>   **generate + revisi sudah diverifikasi end-to-end secara lokal** terhadap provider asli.
+> - **288 unit test** di 17 file lulus: 231 orchestrator + 34 schema + 23 editor.
+>   `npm run typecheck` bersih di ketiga workspace.
+> - **Belum ada:** autentikasi (ditunda sesuai keputusan meeting mentor 2026-11-24),
+>   generator DDL, dan provisioning per proyek. Publish masih simulasi.
+> - **Billing (koin/Midtrans) ditunda** ke fase berikutnya — lihat
+>   `prd_ai_first_app_builder.md` untuk model yang dituju.
 
 ---
 
@@ -70,6 +77,8 @@ D:\PKL\Project
 │   └── src/                      # contract, parse, assemble, index
 ├── .claude/                  # Slash commands, skills, agents
 ├── .amanah/                  # Atlas (peta arsitektur) + blueprint
+├── docs/
+│   └── PROJECT_HANDOFF_CONTEXT.md   # Konteks master lintas-AI (Bahasa Indonesia)
 ├── CLAUDE.md                 # Instruksi agen + aturan non-negosiabel
 ├── PRODUCT.md                # Definisi produk
 └── prd_ai_first_app_builder.md   # Sumber kebenaran kebutuhan (termasuk billing)
@@ -187,6 +196,45 @@ sebagai utang teknis di `TODO.md` — bukan kebetulan yang perlu ditemukan ulang
 
 **Publish** (`runPublish`): masih **simulasi `setTimeout`**. Belum ada generator DDL maupun
 provinsi Cloudflare.
+
+---
+
+## 6a. Peta Jalan — Urutan Prioritas (keputusan meeting mentor 2026-11-24)
+
+**Auth digeser ke belakangan.** Ia bukan lagi blocker P0: gerbang token bersama dan
+`FEATURE_GENERATE_ENABLED` sudah menahan risiko selama deployment tidak dipublikasikan. Urutan
+pengerjaan yang berlaku sekarang:
+
+| # | Tahap | Status |
+|---|-------|--------|
+| 1 | Login / autentikasi | **Ditunda** — dikerjakan setelah rantai di bawah, sebelum platform dibuka ke pengguna nyata |
+| 2 | Editor | **Berjalan** — kanvas, inspector, 2 view, persistensi D1 |
+| 3 | **AI Chief of Staff** | **Belum ada** — sesi tanya-jawab terstruktur untuk menggali kebutuhan user |
+| 4 | Output PRD + diagram Mermaid (user flow) | **Belum ada** — artefak yang terlihat dari tahap 3 |
+| 5 | Generate website end-to-end dengan konten rich | **Sebagian** — lihat keterbatasan di bawah |
+| 6 | Integrasi deploy Cloudflare Pages/D1 | **Masih simulasi** |
+
+### Mengapa tahap 5 disebut "keterbatasan preview"
+
+`WHITELISTED_KINDS` hanya berisi tiga kind: **`navbar`, `stat`, `table`**. Dua akibatnya
+terlihat langsung oleh pengguna:
+
+- Aplikasi hasil generate selalu berbentuk sama — tidak ada form, card, list, atau chart.
+- `TableBlock` di `apps/editor/src/components/preview/Preview.tsx` merender **konstanta `ROWS`
+  yang di-hardcode** (baris "Siti Rahmawati", dst.), bukan data dari dokumen proyek. Jadi isi
+  tabel tidak pernah mencerminkan prompt.
+
+"Mengatasi keterbatasan preview" berarti: memperlebar whitelist beserta renderer-nya, dan
+mengalirkan baris tabel dari dokumen proyek alih-alih konstanta.
+
+### Peran AI Chief of Staff
+
+Tujuannya menutup celah antara "satu kalimat deskripsi" dan "kebutuhan yang sebenarnya".
+Pengguna datang dengan ide, bukan design brief; Chief of Staff menggali lewat pertanyaan
+terarah, lalu menghasilkan PRD + diagram Mermaid user flow yang menjadi bahan tahap generate.
+Spesifikasi perilakunya (aturan 3–5 pertanyaan per putaran, format PRD, standar output rich)
+ada di `docs/PROJECT_HANDOFF_CONTEXT.md` §5 — dokumen itu adalah konteks portabel lintas-AI dan
+ikut diperbarui setiap prioritas/arsitektur berubah.
 
 ---
 

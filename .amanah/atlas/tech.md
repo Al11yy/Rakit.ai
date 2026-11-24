@@ -1,8 +1,9 @@
 # AI-First App Builder for Indonesia — Technology Stack
 
-> **Regenerated from code on 2026-11-18.** Replaces a version that described Express, an
-> in-memory coin ledger, and a `BALANCE_AFTER_REFUND = 128` invariant — none of which exist.
-> Billing is deferred, not cancelled; see `prd_ai_first_app_builder.md`.
+> **Regenerated from code on 2026-11-18; refreshed 2026-11-24** (model `gpt-6-luna`, 288 tests,
+> auth deferred). Replaces a version that described Express, an in-memory coin ledger, and a
+> `BALANCE_AFTER_REFUND = 128` invariant — none of which exist. Billing is deferred, not
+> cancelled; see `prd_ai_first_app_builder.md`.
 
 ## Stack As Built
 
@@ -16,16 +17,39 @@
 | Dev runtime | Node + `tsx watch` on :5181 | **Built** | `apps/orchestrator/src/server.ts` |
 | Contract | Zod `^4.6.7` | **Built** | `packages/schema/src/` |
 | Platform DB | Cloudflare D1 (`rakit-db`) | **Built** | `migrations/`, `repositories/projects.ts` |
-| AI engine | API LLM-Kita, OpenAI-compatible | **Built** | `llm/openai-compatible-client.ts` |
-| Tests | Vitest `^5.1.0` | **Built** | 262 tests across 16 files |
+| AI engine | API LLM-Kita, OpenAI-compatible, model `gpt-6-luna` | **Built & verified E2E** | `llm/openai-compatible-client.ts`, `wrangler.toml` |
+| Tests | Vitest `^5.1.0` | **Built** | **288 tests across 17 files** (231 orchestrator + 34 schema + 23 editor) |
 | E2E harness | Playwright `^1.65.1` | **Built** | `apps/editor/.shots/` |
 | User project DB/compute | D1 + Workers, one per project | **Not built** | `runPublish` is simulated |
 | DDL generation | `packages/generator/` | **Not built** | does not exist |
-| Auth | — | **Not built** | `owner_id` placeholder |
+| AI Chief of Staff | requirement interview, LLM-driven | **Not built** | roadmap step 3 |
+| PRD + Mermaid diagram output | `mermaid` rendering | **Not built** | no Mermaid dependency exists |
+| Auth | — | **Not built — deferred in priority** | `owner_id` placeholder |
 | Payments | Midtrans | **Deferred** | no code; vision only, per PRD |
 
 Editor dev server runs on **port 5180 with `strictPort`**; a second instance fails rather than
 picking another port. The orchestrator's Node entry uses **5181**, `wrangler dev` **8787**.
+
+## Roadmap Priority (2026-11-24 mentor decision)
+
+Auth is **deferred** — it now sits after the product chain, not before it:
+
+```
+Login (deferred) → Editor → AI Chief of Staff → PRD + Mermaid → rich generation → real deploy
+```
+
+What each pending step demands technically, in order:
+
+| Step | Technical work | Where it lands |
+|------|----------------|----------------|
+| AI Chief of Staff | Multi-turn interview state; each round asks at most 3–5 questions; answers accumulate into a requirements object | New `services/` module + new routes; needs conversation state, which does **not** exist (the nearest thing is the `Project` in the Zustand store) |
+| PRD + Mermaid | Emit a PRD document plus a `mermaid` flowchart string; render client-side | New dependency (`mermaid`), new editor view; no Mermaid anywhere today |
+| Rich generation | Widen `WHITELISTED_KINDS` + renderers; stream table rows from the project document instead of the `ROWS` constant | `packages/schema/src/contract.ts`, `Preview.tsx`, system prompt |
+| Real deploy | DDL generation then Cloudflare API provisioning (Pages + one D1 per project) | `packages/generator/` (absent) + `runPublish` |
+
+The interactive constraint to respect: a Chief-of-Staff session is several LLM calls, so it
+needs the same timeout discipline and the same `FEATURE_GENERATE_ENABLED` gate as
+`/generate` and `/revise` — it spends the same quota.
 
 ## Databases
 
@@ -43,13 +67,20 @@ without an explicit decision to start the billing phase.
 
 | Service | Purpose | Timeout | State |
 |---------|---------|---------|-------|
-| API LLM-Kita | Prompt → PRD + JSON schema + component tree | `LLM_TIMEOUT_MS` (60000) | **Integrated** |
+| API LLM-Kita | Prompt → PRD + JSON schema + component tree | `LLM_TIMEOUT_MS` (60000) | **Integrated**, model `gpt-6-luna`, verified E2E |
 | Cloudflare API | Create D1 databases, deploy Pages/Workers | — | Not integrated |
 | Midtrans | QRIS / VA top-ups | — | **Deferred** — no integration, no plan to add before auth |
 
 The LLM-Kita **API** is `https://api.llm-kita.com/api/v1`, not the marketing site at
 `https://llm-kita.com`, which answers every POST with 405. `LLM_KITA_BASE_URL` must include
 `/api/v1`; the client appends `/chat/completions`.
+
+**The active model is `gpt-6-luna`**, set as `LLM_KITA_MODEL` in `apps/orchestrator/wrangler.toml`.
+It replaced the `auto` placeholder on 2026-11-24, and it is the model the local end-to-end
+generate + revise verification ran against. Changing it invalidates that verification — re-run
+it rather than assuming a swap is neutral, because the system prompt is tuned against this
+model's output shape. Do not invent model ids: `kita-default` was invented during setup and
+never existed.
 
 ## Key Libraries
 
