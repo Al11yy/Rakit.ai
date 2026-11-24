@@ -4,6 +4,7 @@ import {
   type LlmProject,
   type ParsedProject,
 } from './contract'
+import type { InterviewBrief } from './interview'
 import { ContractError, toIssues } from './parse'
 
 export interface AssembleOptions {
@@ -13,6 +14,14 @@ export interface AssembleOptions {
   prompt: string
   /** Indonesian relative timestamp, e.g. "baru saja". Server-owned. */
   updatedAt?: string
+  /**
+   * Carried through so a revision cannot silently drop the user's interview (M-9).
+   *
+   * A brief is *user-approved content*, not model scratch data: it took several provider calls
+   * and a human's answers to produce. Regenerating a project must not discard it, which is why
+   * `reviseProject` reads it off the incoming project and threads it back in here.
+   */
+  brief?: InterviewBrief
 }
 
 /**
@@ -50,6 +59,7 @@ export function assembleProject(
     updatedAt: options.updatedAt ?? 'baru saja',
     tablesCount: llmProject.tables.length,
     screensCount: llmProject.screens.length,
+    brief: options.brief,
   }
 
   const result = projectSchema.safeParse(candidate)

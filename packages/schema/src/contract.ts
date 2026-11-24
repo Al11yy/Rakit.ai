@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { interviewBriefSchema } from './interview'
 
 /**
  * The one authoritative list of component kinds the model may emit.
@@ -189,6 +190,23 @@ export const projectSchema = z
     screensCount: z.number().int().nonnegative().default(0),
     status: z.enum(['draft', 'live']).default('draft'),
     updatedAt: z.string().default('baru saja'),
+    /**
+     * The finished interview, or absent.
+     *
+     * Optional is not a convenience: every row written before this feature has no brief, and a
+     * schema that required one would refuse every stored project — a data-loss bug wearing a
+     * validation error's clothes.
+     *
+     * `.nullish().transform(v => v ?? undefined)` collapses absent and `null` into ONE absent
+     * case, for the same reason `optionalText` does: renderers should branch once, not twice.
+     * `.optional()` is re-applied after the transform for the same reason it is there — a bare
+     * `.transform()` would make the key required-with-type-`T | undefined` and force every stored
+     * project literal to spell out `brief: undefined`.
+     */
+    brief: interviewBriefSchema
+      .nullish()
+      .transform((v) => v ?? undefined)
+      .optional(),
   })
   // Blocks were checked per screen; screens were checked against nothing. Duplicate screen
   // ids break React keys across the whole preview, which is worse than within one screen.
